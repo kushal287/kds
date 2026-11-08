@@ -1,0 +1,10 @@
+{
+  "name": "kds-website",
+  "version": "1.0.0",
+  "description": "KDS (Kushal Developer Studios) website with admin panel",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=18" },
+  "license": "UNLICENSED",
+  "private": true
+}

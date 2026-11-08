@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>KDS — Kushal Developer Studios</title>
+<meta name="description" content="KDS (Kushal Developer Studios) — premium websites, apps, video editing, social media and business management solutions.">
+<meta name="theme-color" content="#040404">
+<meta property="og:title" content="KDS — Kushal Developer Studios">
+<meta property="og:description" content="Premium websites, apps, video editing, social media and business solutions, crafted in gold.">
+<meta property="og:image" content="/assets/logo.png">
+<link rel="icon" type="image/png" href="/assets/favicon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@300;400;500;600;700&family=Syne:wght@500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body class="loading">
+
+<!-- preloader -->
+<div id="loader" aria-hidden="true">
+  <div class="loader-logo"><img src="/assets/logo.png" alt=""><span class="shine"></span></div>
+  <div class="loader-bar"><i></i></div>
+  <p>Forging something golden…</p>
+</div>
+
+<!-- fixed visual layers -->
+<canvas id="bg" aria-hidden="true"></canvas>
+<canvas id="fx" aria-hidden="true"></canvas>
+<div id="cursor-glow" aria-hidden="true"></div>
+<div id="grain" aria-hidden="true"></div>
+
+<!-- scroll progress rail -->
+<div id="rail" aria-hidden="true"><div id="rail-fill"></div><div id="rail-dot"></div><span id="rail-label">00</span></div>
+
+<header id="nav">
+  <a class="brand" href="#top" aria-label="KDS home"><img src="/assets/logo.png" alt="KDS"><span class="brand-name">Kushal Developer Studios</span></a>
+  <nav id="nav-links" aria-label="Main"></nav>
+  <a class="btn btn-sm magnetic" href="#contact" id="nav-cta"><span>Let’s talk</span></a>
+  <button id="burger" aria-label="Menu" aria-expanded="false"><i></i><i></i></button>
+</header>
+
+<main id="top">
+  <!-- HERO -->
+  <section id="hero" class="section hero" data-title="Home">
+    <div class="hero-inner">
+      <p class="eyebrow reveal"><span class="pulse"></span> Developer Studio · Est. by Kushal</p>
+      <h1 id="hero-title" class="hero-title"></h1>
+      <p id="hero-sub" class="hero-sub reveal"></p>
+      <div class="hero-actions reveal">
+        <a class="btn magnetic" href="#services"><span>Explore services</span><svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>
+        <a class="btn btn-ghost magnetic" href="#contact"><span>Start a project</span></a>
+      </div>
+      <div id="hero-socials" class="socials reveal"></div>
+    </div>
+    <a class="scroll-hint" href="#about" aria-label="Scroll down"><span></span><em>Scroll</em></a>
+  </section>
+
+  <div class="marquee" aria-hidden="true">
+    <div class="marquee-track" id="marquee"></div>
+  </div>
+
+  <!-- ABOUT -->
+  <section id="about" class="section" data-title="About">
+    <div class="wrap about-grid">
+      <div>
+        <p class="kicker reveal">About KDS</p>
+        <h2 class="h2 reveal" id="about-title"></h2>
+        <p class="lead reveal" id="about-text"></p>
+      </div>
+      <div class="stats reveal" id="stats"></div>
+    </div>
+  </section>
+
+  <!-- SERVICES -->
+  <section id="services" class="section" data-title="Services">
+    <div class="wrap">
+      <p class="kicker reveal">What we do</p>
+      <h2 class="h2 reveal">Services we <em>offer</em></h2>
+      <p class="lead reveal">Everything you need to launch, grow and run your brand — under one roof.</p>
+      <div class="grid services-grid" id="services-grid"></div>
+    </div>
+  </section>
+
+  <!-- PRICING -->
+  <section id="pricing" class="section" data-title="Pricing" hidden>
+    <div class="wrap">
+      <p class="kicker reveal">Services &amp; pricing</p>
+      <h2 class="h2 reveal">One-time <em>services</em></h2>
+      <p class="lead reveal">Clear one-time pricing — everything included is listed on each card. Select what you need and send your enquiry in one tap.</p>
+      <div class="grid plans-grid" id="plans-grid"></div>
+      <div class="direct reveal" id="pricing-direct"></div>
+    </div>
+  </section>
+
+  <!-- PROJECTS -->
+  <section id="projects" class="section" data-title="Projects" hidden>
+    <div class="wrap">
+      <p class="kicker reveal">Our work</p>
+      <h2 class="h2 reveal">Projects done by <em>KDS</em></h2>
+      <p class="lead reveal">Live sites, apps and builds we’ve shipped — with words from the people we built them for.</p>
+      <div class="grid projects-grid" id="projects-grid"></div>
+    </div>
+  </section>
+
+  <!-- TEAM -->
+  <section id="team" class="section" data-title="Team" hidden>
+    <div class="wrap">
+      <p class="kicker reveal">The people</p>
+      <h2 class="h2 reveal">Meet the <em>team</em></h2>
+      <p class="lead reveal">The minds and hands behind every pixel and line of code.</p>
+      <div class="grid team-grid" id="team-grid"></div>
+    </div>
+  </section>
+
+  <!-- CONTACT -->
+  <section id="contact" class="section" data-title="Contact">
+    <div class="wrap contact-grid">
+      <div>
+        <p class="kicker reveal">Get in touch</p>
+        <h2 class="h2 reveal">Let’s build something <em>golden</em></h2>
+        <p class="lead reveal">Tell us about your idea. We usually reply within a day.</p>
+        <div class="contact-list reveal" id="contact-list"></div>
+        <div id="contact-socials" class="socials reveal"></div>
+      </div>
+      <form id="contact-form" class="card glass reveal" novalidate>
+        <h3>Send us your request</h3>
+        <label><span>Your name *</span><input name="name" required maxlength="80" autocomplete="name"></label>
+        <div class="row2">
+          <label><span>Email</span><input name="email" type="email" maxlength="100" autocomplete="email"></label>
+          <label><span>Phone</span><input name="phone" type="tel" maxlength="30" autocomplete="tel"></label>
+        </div>
+        <label><span>What are you interested in?</span><select name="interest" id="form-interest"><option value="">General enquiry</option></select></label>
+        <label><span>Message *</span><textarea name="message" rows="4" required maxlength="2000"></textarea></label>
+        <input class="hp" name="website" tabindex="-1" autocomplete="off" aria-hidden="true">
+        <button class="btn magnetic" type="submit"><span>Send request</span><svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
+        <p class="form-note" id="form-note" role="status"></p>
+        <div class="form-success" id="form-success" role="status" aria-live="polite" hidden>
+          <div class="tick"><svg viewBox="0 0 52 52"><circle cx="26" cy="26" r="24"/><path d="M14 27l8 8 16-17"/></svg></div>
+          <h3>Request sent successfully!</h3>
+          <p id="success-text">Thank you — we’ve received your request and will get back to you shortly.</p>
+          <button class="btn btn-ghost" type="button" id="send-another"><span>Send another request</span></button>
+        </div>
+      </form>
+    </div>
+  </section>
+</main>
+
+<footer id="footer">
+  <div class="wrap foot">
+    <div class="foot-brand">
+      <img src="/assets/logo.png" alt="KDS logo">
+      <p>Made by <b id="foot-founder">Kushal Aggarwal</b><br><span id="foot-studio">KDS (Kushal Developer Studios)</span></p>
+    </div>
+    <div id="footer-socials" class="socials"></div>
+    <p class="copy">© <span id="year"></span> KDS. All rights reserved.</p>
+  </div>
+</footer>
+
+<script src="/vendor/three.min.js"></script>
+<script src="/js/bg.js"></script>
+<script src="/js/scene.js"></script>
+<script src="/js/app.js"></script>
+</body>
+</html>
