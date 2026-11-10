@@ -28,6 +28,7 @@
   async function boot() {
     closeModal();
     let st; try { st = await api('GET', '/api/admin/status'); } catch (e) { app.innerHTML = '<div class="auth"><div class="auth-card"><p>Cannot reach the server.</p></div></div>'; return; }
+    if (st.locked) { app.innerHTML = '<div class="auth"><div class="auth-card"><img src="/assets/logo.png" alt="KDS"><h1>Admin not configured</h1><p>This hosted site has no admin password yet. In your hosting dashboard add an environment variable <code>ADMIN_PASSWORD</code> and redeploy, then come back here to log in.</p></div></div>'; return; }
     if (st.setup) return authView('setup');
     if (!st.loggedIn) return authView('login');
     await refresh(); shell();

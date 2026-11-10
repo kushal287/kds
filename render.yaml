@@ -1,0 +1,28 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+# Deploys the KDS website as a Node web service with a persistent disk so your admin content,
+# uploaded images and enquiries survive restarts and redeploys.
+services:
+  - type: web
+    name: kds-website
+    runtime: node
+    plan: starter            # persistent disks need a paid instance (free instances lose all data on restart)
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /healthz
+    autoDeploy: true
+    disk:
+      name: kds-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATA_DIR
+        value: /var/data
+      # Set these in the Render dashboard (values are never stored in Git):
+      - key: ADMIN_PASSWORD        # your admin login password
+        sync: false
+      - key: KDS_WEBHOOK_URL       # optional: your Google Apps Script web-app URL (…/exec)
+        sync: false
+      - key: KDS_WEBHOOK_SECRET    # optional: the SECRET you set in the Apps Script
+        sync: false

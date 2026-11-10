@@ -7,11 +7,14 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const zlib = require('zlib');
 
 const PORT = parseInt(process.env.PORT, 10) || 3000;
 const ROOT = __dirname;
 const PUBLIC = path.join(ROOT, 'public');
-const DATA_DIR = path.join(ROOT, 'data');
+// On a host with a persistent disk (e.g. Render) point DATA_DIR at the mounted disk so content survives restarts.
+const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(ROOT, 'data'));
+const IS_PROD = process.env.NODE_ENV === 'production' || !!process.env.RENDER;
 const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
 const DB_FILE = path.join(DATA_DIR, 'db.json');
 const AUTH_FILE = path.join(DATA_DIR, 'auth.json');
@@ -74,8 +77,18 @@ function loadDb() {
     // older messages used a "read" flag; map it to a status
     db.messages.forEach((m) => { if (!m.status) m.status = m.read ? 'contacted' : 'new'; if (!m.sync) m.sync = 'off'; });
   } catch (e) {
+    // never silently throw away an unreadable database: keep a copy of it before starting fresh
+    if (fs.existsSync(DB_FILE)) {
+      try { fs.copyFileSync(DB_FILE, DB_FILE + '.broken-' + Date.now()); } catch (x) { /* ignore */ }
+      console.error('db.json could not be read (' + e.message + ') — a backup copy was kept.');
+    }
     db = defaultDb();
     saveDb();
+  }
+  // Keep the Google Sheet hook working even if the data disk is wiped: fall back to environment variables.
+  if (!db.integrations.webhookUrl && process.env.KDS_WEBHOOK_URL) {
+    db.integrations.webhookUrl = process.env.KDS_WEBHOOK_URL;
+    db.integrations.secret = db.integrations.secret || process.env.KDS_WEBHOOK_SECRET || '';
   }
 }
 let saveTimer = null;
@@ -102,11 +115,13 @@ function checkPassword(pw) {
   const a = Buffer.from(hash, 'hex'), b = Buffer.from(auth.hash, 'hex');
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
-// If ADMIN_PASSWORD env is set and no password exists yet, use it.
-if (!auth && process.env.ADMIN_PASSWORD) {
+// ADMIN_PASSWORD (env) creates the admin login when none exists yet.
+// To force a reset later, set ADMIN_PASSWORD_RESET=true together with the new ADMIN_PASSWORD, redeploy, then remove the reset variable.
+if (process.env.ADMIN_PASSWORD && (!auth || process.env.ADMIN_PASSWORD_RESET === 'true')) {
   const { salt, hash } = hashPassword(process.env.ADMIN_PASSWORD);
   auth = { salt, hash, secret: crypto.randomBytes(32).toString('hex') };
   saveAuth();
+  console.log('  Admin password set from ADMIN_PASSWORD.');
 }
 
 function sign(payload) {
@@ -241,13 +256,17 @@ function readJson(req, limit = 1e6) {
     req.on('error', reject);
   });
 }
-const clientIp = (req) => (req.socket.remoteAddress || '') + '';
+// Behind a host's proxy (Render) the socket address is the proxy, so read the forwarded client address.
+const clientIp = (req) => String(req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || '';
+const isHttps = (req) => req.headers['x-forwarded-proto'] === 'https' || !!req.socket.encrypted;
 
 function publicData() {
   const { settings, services, plans, projects, team } = db;
   return { settings, services, plans, projects, team };
 }
 
+const COMPRESSIBLE = new Set(['.html', '.css', '.js', '.json', '.svg', '.txt']);
+const gzCache = new Map();
 function serveFile(req, res, file, extra = {}) {
   fs.stat(file, (err, st) => {
     if (err || !st.isFile()) return send(res, 404, 'Not found');
@@ -256,9 +275,11 @@ function serveFile(req, res, file, extra = {}) {
     // Uploaded files get a unique name per upload, so they can be cached for long.
     const immutable = file.startsWith(UPLOAD_DIR + path.sep);
     const lastMod = st.mtime.toUTCString();
+    const compressible = COMPRESSIBLE.has(ext) && st.size > 1024;
     const headers = Object.assign({
       'Content-Type': MIME[ext] || 'application/octet-stream',
       'Content-Length': st.size,
+      ...(compressible ? { 'Vary': 'Accept-Encoding' } : {}),
       'X-Content-Type-Options': 'nosniff',
       'Last-Modified': lastMod,
       'Cache-Control': immutable ? 'public, max-age=31536000, immutable' : 'no-cache'
@@ -269,6 +290,17 @@ function serveFile(req, res, file, extra = {}) {
       return res.end();
     }
     if (req.method === 'HEAD') { res.writeHead(200, headers); return res.end(); }
+    if (compressible && /\bgzip\b/.test(req.headers['accept-encoding'] || '')) {
+      const key = file + ':' + st.mtimeMs;
+      const reply = (buf) => { headers['Content-Encoding'] = 'gzip'; headers['Content-Length'] = buf.length; res.writeHead(200, headers); res.end(buf); };
+      const hit = gzCache.get(key);
+      if (hit) return reply(hit);
+      return fs.readFile(file, (e, data) => {
+        if (e) return send(res, 404, 'Not found');
+        if (gzCache.size > 150) gzCache.clear();
+        const buf = zlib.gzipSync(data, { level: 9 }); gzCache.set(key, buf); reply(buf);
+      });
+    }
     res.writeHead(200, headers);
     fs.createReadStream(file).pipe(res);
   });
@@ -346,26 +378,27 @@ async function api(req, res, pathname) {
   }
 
   /* ----- admin auth */
-  if (pathname === '/api/admin/status' && method === 'GET') return send(res, 200, { setup: !auth, loggedIn: isAdmin(req) });
+  if (pathname === '/api/admin/status' && method === 'GET') return send(res, 200, { setup: !auth && !IS_PROD, locked: !auth && IS_PROD, loggedIn: isAdmin(req) });
 
   if (pathname === '/api/admin/setup' && method === 'POST') {
     if (auth) return send(res, 403, { error: 'Already set up' });
+    if (IS_PROD) return send(res, 403, { error: 'Setup is disabled on hosted sites. Set the ADMIN_PASSWORD environment variable and redeploy.' });
     let b; try { b = await readJson(req, 5000); } catch (e) { return send(res, 400, { error: 'Bad request' }); }
     const pw = str(b.password, 200);
     if (pw.length < 8) return send(res, 400, { error: 'Password must be at least 8 characters.' });
     const { salt, hash } = hashPassword(pw);
     auth = { salt, hash, secret: crypto.randomBytes(32).toString('hex') };
     saveAuth();
-    return startSession(res);
+    return startSession(req, res);
   }
   if (pathname === '/api/admin/login' && method === 'POST') {
-    if (limited('login:' + clientIp(req), 8, 15 * 60e3)) return send(res, 429, { error: 'Too many attempts. Try again in 15 minutes.' });
+    if (limited('login:' + clientIp(req), 8, 15 * 60e3) || limited('login:all', 40, 15 * 60e3)) return send(res, 429, { error: 'Too many attempts. Try again in 15 minutes.' });
     let b; try { b = await readJson(req, 5000); } catch (e) { return send(res, 400, { error: 'Bad request' }); }
     if (!checkPassword(b.password || '')) return send(res, 401, { error: 'Wrong password.' });
-    return startSession(res);
+    return startSession(req, res);
   }
   if (pathname === '/api/admin/logout' && method === 'POST') {
-    return send(res, 200, { ok: true }, { 'Set-Cookie': 'kds_admin=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0' });
+    return send(res, 200, { ok: true }, { 'Set-Cookie': 'kds_admin=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0' + (isHttps(req) ? '; Secure' : '') });
   }
 
   /* everything below needs admin */
@@ -395,7 +428,7 @@ async function api(req, res, pathname) {
     const { salt, hash } = hashPassword(pw);
     auth.salt = salt; auth.hash = hash; auth.secret = crypto.randomBytes(32).toString('hex'); // invalidates other sessions
     saveAuth();
-    return startSession(res);
+    return startSession(req, res);
   }
 
   if (parts[0] === 'upload' && method === 'POST') return upload(req, res);
@@ -484,9 +517,9 @@ function placeAt(list, item, position) {
   list.splice(i, 0, item);
 }
 
-function startSession(res) {
+function startSession(req, res) {
   const token = sign({ exp: Date.now() + 7 * 24 * 3600e3 });
-  return send(res, 200, { ok: true }, { 'Set-Cookie': `kds_admin=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${7 * 24 * 3600}` });
+  return send(res, 200, { ok: true }, { 'Set-Cookie': `kds_admin=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${7 * 24 * 3600}${isHttps(req) ? '; Secure' : ''}` });
 }
 
 function upload(req, res) {
@@ -518,10 +551,12 @@ const server = http.createServer(async (req, res) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
     res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    if (isHttps(req)) res.setHeader('Strict-Transport-Security', 'max-age=15552000');
 
     if (pathname.startsWith('/api/')) return await api(req, res, pathname);
 
     if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, 'Method not allowed');
+    if (pathname === '/healthz') return send(res, 200, 'ok');
 
     if (pathname.startsWith('/uploads/')) {
       const f = safeJoin(UPLOAD_DIR, pathname.slice('/uploads/'.length));
@@ -545,5 +580,8 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log('\n  KDS website running');
   console.log(`  Site:   http://localhost:${PORT}`);
-  console.log(`  Admin:  http://localhost:${PORT}/aaddmmiinn${auth ? '' : '   (first visit: choose your admin password)'}\n`);
+  console.log(`  Admin:  http://localhost:${PORT}/aaddmmiinn${auth ? '' : IS_PROD ? '' : '   (first visit: choose your admin password)'}`);
+  console.log(`  Data:   ${DATA_DIR}`);
+  if (IS_PROD && !auth) console.log('  !! No admin password yet — set the ADMIN_PASSWORD environment variable and redeploy.');
+  console.log('');
 });

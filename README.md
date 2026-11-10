@@ -31,3 +31,6 @@ Keep `data/` out of public repositories. If you deploy publicly, put the site be
 
 ## Enquiries → Google Sheet + email
 See `SETUP-GOOGLE-SHEETS.md` (also shown step by step in the admin panel → “Google Sheet & Email”). The script is in `google-apps-script/Code.gs`.
+
+## Hosting on Render
+See `DEPLOY-RENDER.md` — the repo includes a `render.yaml` Blueprint (Node web service + persistent disk). Environment variables: `ADMIN_PASSWORD`, `DATA_DIR`, optional `KDS_WEBHOOK_URL` / `KDS_WEBHOOK_SECRET`.
