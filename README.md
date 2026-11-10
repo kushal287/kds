@@ -33,4 +33,4 @@ Keep `data/` out of public repositories. If you deploy publicly, put the site be
 See `SETUP-GOOGLE-SHEETS.md` (also shown step by step in the admin panel → “Google Sheet & Email”). The script is in `google-apps-script/Code.gs`.
 
 ## Hosting on Render
-See `DEPLOY-RENDER.md` — the repo includes a `render.yaml` Blueprint (Node web service + persistent disk). Environment variables: `ADMIN_PASSWORD`, `DATA_DIR`, optional `KDS_WEBHOOK_URL` / `KDS_WEBHOOK_SECRET`.
+See `DEPLOY-RENDER.md` — the repo includes a `render.yaml` Blueprint for the FREE plan; content is kept in a private GitHub data repo. Variables: `ADMIN_PASSWORD`, `GH_DATA_REPO`, `GH_TOKEN`, optional `KDS_WEBHOOK_URL` / `KDS_WEBHOOK_SECRET` (or `DATA_DIR` for a paid persistent disk).

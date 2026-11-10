@@ -20,6 +20,88 @@ const DB_FILE = path.join(DATA_DIR, 'db.json');
 const AUTH_FILE = path.join(DATA_DIR, 'auth.json');
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
+/* ------------------------------------------------ optional durable storage (GitHub data repo)
+ * Free hosts (Render free plan) wipe the disk on every restart. If GH_DATA_REPO + GH_TOKEN are set,
+ * db.json and every upload are also saved in a PRIVATE GitHub repo, and restored from it on start-up.
+ * Zero dependencies — plain fetch() against the GitHub Contents API. */
+const GH_API = (process.env.GH_API_URL || 'https://api.github.com').replace(/\/$/, '');
+const GH = { repo: process.env.GH_DATA_REPO || '', token: process.env.GH_TOKEN || '', branch: process.env.GH_DATA_BRANCH || 'main' };
+const REMOTE = !!(GH.repo && GH.token && /^[\w.-]+\/[\w.-]+$/.test(GH.repo));
+const REMOTE_MAX_UPLOAD = 25 * 1024 * 1024; // files are sent through the GitHub API, so keep them modest
+
+function ghFetch(method, p, body, accept) {
+  const url = `${GH_API}/repos/${GH.repo}/contents/${p.split('/').map(encodeURIComponent).join('/')}` + (method === 'GET' ? `?ref=${encodeURIComponent(GH.branch)}` : '');
+  return fetch(url, {
+    method,
+    headers: Object.assign({ Authorization: 'Bearer ' + GH.token, Accept: accept || 'application/vnd.github+json', 'User-Agent': 'kds-website', 'X-GitHub-Api-Version': '2022-11-28' }, body ? { 'Content-Type': 'application/json' } : {}),
+    body: body ? JSON.stringify(body) : undefined
+  });
+}
+async function ghSha(p) {
+  const r = await ghFetch('GET', p);
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error('GitHub ' + r.status);
+  return (await r.json()).sha || null;
+}
+async function ghGetRaw(p) {
+  const r = await ghFetch('GET', p, null, 'application/vnd.github.raw+json');
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error('GitHub ' + r.status);
+  return Buffer.from(await r.arrayBuffer());
+}
+async function ghPut(p, buf, message) {
+  for (let i = 0; i < 3; i++) {
+    const sha = await ghSha(p);
+    const r = await ghFetch('PUT', p, Object.assign({ message, content: buf.toString('base64'), branch: GH.branch }, sha ? { sha } : {}));
+    if (r.ok) return;
+    if (r.status !== 409 && r.status !== 422) throw new Error('GitHub ' + r.status + ' ' + (await r.text()).slice(0, 160));
+  }
+  throw new Error('GitHub conflict — try again');
+}
+let pushTimer = null, pushing = false, dirty = false;
+function queuePush() { dirty = true; clearTimeout(pushTimer); pushTimer = setTimeout(() => pushNow().catch(() => {}), 2500); }
+async function pushNow() {
+  if (pushing) { dirty = true; return; }
+  pushing = true;
+  try {
+    while (dirty) {
+      dirty = false;
+      try { await ghPut('db.json', fs.readFileSync(DB_FILE), 'Update site data'); }
+      catch (e) { dirty = true; console.error('Saving to the data repo failed (will retry):', e.message); setTimeout(queuePush, 30000).unref(); break; }
+    }
+  } finally { pushing = false; }
+}
+async function pullRemote() {
+  // Refuse to start if the repo can't be reached — otherwise we could overwrite real data with an empty site.
+  for (let i = 1; i <= 5; i++) {
+    try {
+      const chk = await fetch(`${GH_API}/repos/${GH.repo}`, { headers: { Authorization: 'Bearer ' + GH.token, Accept: 'application/vnd.github+json', 'User-Agent': 'kds-website' } });
+      if (!chk.ok) throw new Error(`cannot open data repo "${GH.repo}" (HTTP ${chk.status}) — check GH_DATA_REPO and that GH_TOKEN has Contents read/write access to it`);
+      const buf = await ghGetRaw('db.json');
+      if (buf) { fs.writeFileSync(DB_FILE, buf); console.log('  Restored site data from GitHub (' + GH.repo + ').'); }
+      else console.log('  Data repo has no db.json yet — starting with the default content.');
+      return;
+    } catch (e) {
+      console.error(`Data repo not ready (try ${i}/5): ${e.message}`);
+      if (i === 5) throw e;
+      await new Promise((r) => setTimeout(r, 3000 * i));
+    }
+  }
+}
+const pulling = new Map();
+function ensureUpload(file, name) { // fetch an uploaded file back from the data repo if the local copy is gone
+  if (fs.existsSync(file)) return Promise.resolve(true);
+  if (!REMOTE || !/^[A-Za-z0-9._-]+$/.test(name)) return Promise.resolve(false);
+  if (!pulling.has(name)) {
+    pulling.set(name, (async () => {
+      try { const buf = await ghGetRaw('uploads/' + name); if (!buf) return false; fs.writeFileSync(file, buf); return true; }
+      catch (e) { console.error('Could not restore upload ' + name + ':', e.message); return false; }
+      finally { pulling.delete(name); }
+    })());
+  }
+  return pulling.get(name);
+}
+
 /* ------------------------------------------------------------------ defaults */
 const uid = () => crypto.randomBytes(6).toString('hex');
 
@@ -96,8 +178,8 @@ function saveDb() {
   const tmp = DB_FILE + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(db, null, 2));
   fs.renameSync(tmp, DB_FILE);
+  if (REMOTE) queuePush();
 }
-loadDb();
 
 /* ---------------------------------------------------------------------- auth */
 let auth = null;
@@ -122,6 +204,18 @@ if (process.env.ADMIN_PASSWORD && (!auth || process.env.ADMIN_PASSWORD_RESET ===
   auth = { salt, hash, secret: crypto.randomBytes(32).toString('hex') };
   saveAuth();
   console.log('  Admin password set from ADMIN_PASSWORD.');
+}
+// With remote storage the disk is throw-away, so the login comes straight from the environment on every start
+// (deterministic session key → you stay logged in across restarts).
+let ENV_LOCKED = false;
+if (REMOTE && process.env.ADMIN_PASSWORD) {
+  const pw = process.env.ADMIN_PASSWORD;
+  const salt = crypto.createHash('sha256').update('kds-salt:' + pw).digest('hex').slice(0, 32);
+  auth = {
+    salt, hash: hashPassword(pw, salt).hash,
+    secret: crypto.createHmac('sha256', pw).update('kds-session-v1:' + (process.env.SESSION_SECRET || '')).digest('hex')
+  };
+  ENV_LOCKED = true;
 }
 
 function sign(payload) {
@@ -346,7 +440,7 @@ async function forwardToSheet(msg) {
 // The Apps Script ignores duplicates by enquiry ID, so a retry can never create a second row or email.
 let retrying = false;
 async function retryFailed() {
-  if (retrying || !db.integrations.webhookUrl) return;
+  if (retrying || !db || !db.integrations.webhookUrl) return;
   retrying = true;
   try {
     const due = db.messages.filter((m) => (m.sync === 'failed' || m.sync === 'pending') && (m.attempts || 0) < 6 && Date.now() - (m.lastTry || 0) > 2 * 60e3).reverse();
@@ -421,6 +515,7 @@ async function api(req, res, pathname) {
   }
 
   if (parts[0] === 'password' && method === 'POST') {
+    if (ENV_LOCKED) return send(res, 400, { error: 'On this hosted site the admin password comes from the ADMIN_PASSWORD environment variable — change it in your Render dashboard (Environment) and redeploy.' });
     let b; try { b = await readJson(req, 5000); } catch (e) { return send(res, 400, { error: 'Bad request' }); }
     if (!checkPassword(b.current || '')) return send(res, 403, { error: 'Current password is wrong.' });
     const pw = str(b.password, 200);
@@ -529,7 +624,8 @@ function upload(req, res) {
   if (ext === '.jpeg') ext = '.jpg';
   if (!UPLOAD_EXT.includes(ext) && ext !== '.jpg') return send(res, 400, { error: 'File type not allowed. Use png, jpg, webp, gif, pdf, apk or zip.' });
   const len = parseInt(req.headers['content-length'], 10);
-  if (!len || len > MAX_UPLOAD) return send(res, 413, { error: 'File too large (max 150 MB).' });
+  const cap = REMOTE ? REMOTE_MAX_UPLOAD : MAX_UPLOAD;
+  if (!len || len > cap) return send(res, 413, { error: `File too large (max ${Math.round(cap / 1048576)} MB).${REMOTE ? ' For bigger files (e.g. an APK) upload to Google Drive / GitHub Releases and paste the link instead.' : ''}` });
   const base = orig.replace(/\.[^.]+$/, '').replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'file';
   const name = `${base}-${uid()}${ext}`;
   const dest = path.join(UPLOAD_DIR, name);
@@ -537,10 +633,17 @@ function upload(req, res) {
   let size = 0, aborted = false;
   req.on('data', (c) => {
     size += c.length;
-    if (size > MAX_UPLOAD && !aborted) { aborted = true; out.destroy(); fs.unlink(dest, () => {}); send(res, 413, { error: 'File too large' }); req.destroy(); }
+    if (size > cap && !aborted) { aborted = true; out.destroy(); fs.unlink(dest, () => {}); send(res, 413, { error: 'File too large' }); req.destroy(); }
   });
   req.pipe(out);
-  out.on('finish', () => { if (!aborted) send(res, 200, { url: '/uploads/' + name, name }); });
+  out.on('finish', async () => {
+    if (aborted) return;
+    if (REMOTE) { // keep a permanent copy before telling the admin it worked
+      try { await ghPut('uploads/' + name, fs.readFileSync(dest), 'Upload ' + name); }
+      catch (e) { fs.unlink(dest, () => {}); return send(res, 502, { error: 'Could not save the file to permanent storage: ' + e.message }); }
+    }
+    send(res, 200, { url: '/uploads/' + name, name });
+  });
   out.on('error', () => { if (!aborted) send(res, 500, { error: 'Could not save file' }); });
 }
 
@@ -561,6 +664,7 @@ const server = http.createServer(async (req, res) => {
     if (pathname.startsWith('/uploads/')) {
       const f = safeJoin(UPLOAD_DIR, pathname.slice('/uploads/'.length));
       if (!f) return send(res, 403, 'Forbidden');
+      await ensureUpload(f, pathname.slice('/uploads/'.length));
       const ext = path.extname(f).toLowerCase();
       const extra = ['.apk', '.zip'].includes(ext) ? { 'Content-Disposition': 'attachment' } : { 'Content-Security-Policy': "default-src 'none'; sandbox" };
       return serveFile(req, res, f, extra);
@@ -577,11 +681,25 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
-  console.log('\n  KDS website running');
-  console.log(`  Site:   http://localhost:${PORT}`);
-  console.log(`  Admin:  http://localhost:${PORT}/aaddmmiinn${auth ? '' : IS_PROD ? '' : '   (first visit: choose your admin password)'}`);
-  console.log(`  Data:   ${DATA_DIR}`);
-  if (IS_PROD && !auth) console.log('  !! No admin password yet — set the ADMIN_PASSWORD environment variable and redeploy.');
-  console.log('');
+async function start() {
+  if (REMOTE) await pullRemote();
+  loadDb();
+  server.listen(PORT, () => {
+    console.log('\n  KDS website running');
+    console.log(`  Site:   http://localhost:${PORT}`);
+    console.log(`  Admin:  http://localhost:${PORT}/aaddmmiinn${auth ? '' : IS_PROD ? '' : '   (first visit: choose your admin password)'}`);
+    console.log(`  Data:   ${REMOTE ? 'GitHub data repo ' + GH.repo + ' (local cache ' + DATA_DIR + ')' : DATA_DIR}`);
+    if (IS_PROD && !auth) console.log('  !! No admin password yet — set the ADMIN_PASSWORD environment variable and redeploy.');
+    if (IS_PROD && !REMOTE && !process.env.DATA_DIR) console.log('  !! No permanent storage configured — content is lost on every restart. Set GH_DATA_REPO + GH_TOKEN (see DEPLOY-RENDER.md).');
+    console.log('');
+  });
+}
+start().catch((e) => { console.error('Start-up failed:', e.message); process.exit(1); });
+
+// Hosts send SIGTERM before stopping/sleeping an instance — flush any pending save first.
+process.on('SIGTERM', async () => {
+  console.log('Shutting down — saving…');
+  clearTimeout(pushTimer);
+  try { if (REMOTE && dirty) { dirty = true; pushing = false; await pushNow(); } } catch (e) { console.error(e.message); }
+  process.exit(0);
 });
